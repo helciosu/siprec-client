@@ -98,6 +98,12 @@ from typing import Union, Any # Using built-in types (list, dict, etc.) and Unio
 
 # --- 3rd Party Libs ---
 try:
+    from dotenv import load_dotenv
+except ImportError:
+    print("Error: python-dotenv library not found. Please install it: pip install python-dotenv", file=sys.stderr)
+    sys.exit(1)
+
+try:
     import numpy as np
 except ImportError:
     print("Error: numpy library not found. Please install it: pip install numpy", file=sys.stderr)
@@ -1968,20 +1974,66 @@ def stream_channel(
 
 # --- Helper Functions for main() ---
 
+def load_env_config() -> dict[str, str]:
+    """
+    Loads configuration from .env file if it exists.
+    Returns a dictionary with environment variable values.
+    """
+    env_file_path = os.path.join(os.getcwd(), '.env')
+    
+    if os.path.exists(env_file_path):
+        logger.info(f"Loading configuration from .env file: {env_file_path}")
+        load_dotenv(env_file_path)
+        return {
+            'dest_number': os.getenv('SIPREC_DEST_NUMBER', ''),
+            'dest_host': os.getenv('SIPREC_DEST_HOST', ''),
+            'dest_port': os.getenv('SIPREC_DEST_PORT', str(DEFAULT_SIPS_PORT)),
+            'src_number': os.getenv('SIPREC_SRC_NUMBER', ''),
+            'src_host': os.getenv('SIPREC_SRC_HOST', ''),
+            'src_display_name': os.getenv('SIPREC_SRC_DISPLAY_NAME', 'PythonSIPRECClient'),
+            'local_port': os.getenv('SIPREC_LOCAL_PORT', '0'),
+            'cert_file': os.getenv('SIPREC_CERT_FILE', ''),
+            'key_file': os.getenv('SIPREC_KEY_FILE', ''),
+            'ca_file': os.getenv('SIPREC_CA_FILE', ''),
+            'audio_encoding': os.getenv('SIPREC_AUDIO_ENCODING', DEFAULT_AUDIO_ENCODING),
+            'options_ping_count': os.getenv('SIPREC_OPTIONS_PING_COUNT', '0'),
+            'options_target_uri': os.getenv('SIPREC_OPTIONS_TARGET_URI', ''),
+            'call_info_url': os.getenv('SIPREC_CALL_INFO_URL', ''),
+            'srtp_encryption': os.getenv('SIPREC_SRTP_ENCRYPTION', DEFAULT_SRTP_ENCRYPTION),
+            'audio_file': os.getenv('SIPREC_AUDIO_FILE', ''),
+            'packet_time': os.getenv('SIPREC_PACKET_TIME', str(DEFAULT_PACKET_TIME_MS)),
+            'stream_duration': os.getenv('SIPREC_STREAM_DURATION', '0'),
+            'save_stream1_file': os.getenv('SIPREC_SAVE_STREAM1_FILE', ''),
+            'save_stream2_file': os.getenv('SIPREC_SAVE_STREAM2_FILE', ''),
+            'debug': os.getenv('SIPREC_DEBUG', 'false').lower() == 'true',
+            'pcap_file': os.getenv('SIPREC_PCAP_FILE', ''),
+            'capture_interface': os.getenv('SIPREC_CAPTURE_INTERFACE', 'any'),
+            'capture_sip_range': os.getenv('SIPREC_CAPTURE_SIP_RANGE', DEFAULT_CAPTURE_SIP_RANGE),
+            'capture_sip_port': os.getenv('SIPREC_CAPTURE_SIP_PORT', str(DEFAULT_CAPTURE_SIP_PORT)),
+            'capture_media_range': os.getenv('SIPREC_CAPTURE_MEDIA_RANGE', DEFAULT_CAPTURE_MEDIA_RANGE),
+        }
+    else:
+        logger.info("No .env file found, using CLI arguments only")
+        return {}
+
 def _validate_args(args: argparse.Namespace) -> bool:
-    """Performs basic validation on parsed command-line arguments."""
+    """
+    Validates the provided arguments.
+    Returns True if valid, False otherwise.
+    """
     valid = True
+
     # Check required file existence
     try:
-         required_files = {'cert-file': args.cert_file, 'key-file': args.key_file}
-         if args.ca_file: required_files['ca-file'] = args.ca_file
-         if args.audio_file: required_files['audio-file'] = args.audio_file
-         for name, path in required_files.items():
-              if path and not os.path.isfile(path):
-                   raise FileNotFoundError(f"Required file --{name} not found: {path}")
+        required_files = {'cert-file': args.cert_file, 'key-file': args.key_file}
+        if args.ca_file: required_files['ca-file'] = args.ca_file
+        if args.audio_file: required_files['audio-file'] = args.audio_file
+        for name, path in required_files.items():
+            if path and not os.path.isfile(path):
+                raise FileNotFoundError(f"Required file --{name} not found: {path}")
     except FileNotFoundError as fnf_error:
-         logger.error(f"Error: {fnf_error}")
-         valid = False
+        logger.error(f"Error: {fnf_error}")
+        valid = False
 
     # Ensure source number looks like an AOR
     if '@' not in args.src_number:
@@ -2137,6 +2189,9 @@ def main() -> None:
     Main function: Parses arguments, runs SIP client, handles streaming,
     manages packet capture, performs cleanup, and exits.
     """
+    # --- Load .env configuration first ---
+    env_config = load_env_config()
+    
     # --- Argument Parsing ---
     parser = argparse.ArgumentParser(
         description=f"Python SIPREC Test Client with SRTP/RTP Streaming (v{USER_AGENT.split('/')[1]})",
@@ -2149,41 +2204,70 @@ def main() -> None:
                f"Stream saving creates WAV files for PCMA/PCMU, mapping based on SDP labels matching client offer ('{CLIENT_OFFERED_LABEL_1}', '{CLIENT_OFFERED_LABEL_2}')."
     )
     # Destination
-    parser.add_argument("dest_number", help="Destination user/number part for Request-URI")
-    parser.add_argument("dest_host", help="Destination SIP server hostname or IP address")
-    parser.add_argument("-p", "--dest-port", type=int, default=DEFAULT_SIPS_PORT, help="Destination SIP server port (SIPS/TLS)")
+    parser.add_argument("dest_number", nargs='?', default=env_config.get('dest_number', ''), 
+                       help="Destination user/number part for Request-URI")
+    parser.add_argument("dest_host", nargs='?', default=env_config.get('dest_host', ''), 
+                       help="Destination SIP server hostname or IP address")
+    parser.add_argument("-p", "--dest-port", type=int, default=int(env_config.get('dest_port', DEFAULT_SIPS_PORT)), 
+                       help="Destination SIP server port (SIPS/TLS)")
     # Source
-    parser.add_argument("-s", "--src-number", required=True, help="Source AOR (e.g., 'client@example.com')")
-    parser.add_argument("--src-host", required=True, help="Source host FQDN or public IP (must be resolvable)")
-    parser.add_argument("--src-display-name", default="PythonSIPRECClient", help="Source display name")
+    parser.add_argument("-s", "--src-number", default=env_config.get('src_number', ''), 
+                       required=not bool(env_config.get('src_number')), 
+                       help="Source AOR (e.g., 'client@example.com')")
+    parser.add_argument("--src-host", default=env_config.get('src_host', ''), 
+                       required=not bool(env_config.get('src_host')), 
+                       help="Source host FQDN or public IP (must be resolvable)")
+    parser.add_argument("--src-display-name", default=env_config.get('src_display_name', 'PythonSIPRECClient'), 
+                       help="Source display name")
     # Local Network
-    parser.add_argument("--local-port", type=int, default=0, help="Local TCP port for SIP (0=OS default)")
+    parser.add_argument("--local-port", type=int, default=int(env_config.get('local_port', '0')), 
+                       help="Local TCP port for SIP (0=OS default)")
     # TLS
-    parser.add_argument("--cert-file", required=True, help="Path to client TLS certificate file (PEM)")
-    parser.add_argument("--key-file", required=True, help="Path to client TLS private key file (PEM, unencrypted)")
-    parser.add_argument("--ca-file", help="Path to CA certificate file for server verification (PEM). Omit=INSECURE.")
+    parser.add_argument("--cert-file", default=env_config.get('cert_file', ''), 
+                       required=not bool(env_config.get('cert_file')), 
+                       help="Path to client TLS certificate file (PEM)")
+    parser.add_argument("--key-file", default=env_config.get('key_file', ''), 
+                       required=not bool(env_config.get('key_file')), 
+                       help="Path to client TLS private key file (PEM, unencrypted)")
+    parser.add_argument("--ca-file", default=env_config.get('ca_file', ''), 
+                       help="Path to CA certificate file for server verification (PEM). Omit=INSECURE.")
     # SIP/SDP/Media
-    parser.add_argument("--audio-encoding", default=DEFAULT_AUDIO_ENCODING,
+    parser.add_argument("--audio-encoding", default=env_config.get('audio_encoding', DEFAULT_AUDIO_ENCODING),
                         help=f"Audio encoding ('NAME/Rate'). Supported: {list(AUDIO_ENCODING_TO_PAYLOAD_TYPE.keys())}. PCMA/PCMU for WAV saving.")
-    parser.add_argument("--options-ping-count", type=int, default=0, help="Number of OPTIONS pings before INVITE.")
-    parser.add_argument("--options-target-uri", help="Optional Request-URI for OPTIONS.")
-    parser.add_argument("--call-info-url", help="URL for Call-Info header (e.g., CCAI conversation URL)")
-    parser.add_argument("--srtp-encryption", default=DEFAULT_SRTP_ENCRYPTION, choices=SRTP_ENCRYPTION_CHOICES,
+    parser.add_argument("--options-ping-count", type=int, default=int(env_config.get('options_ping_count', '0')), 
+                       help="Number of OPTIONS pings before INVITE.")
+    parser.add_argument("--options-target-uri", default=env_config.get('options_target_uri', ''), 
+                       help="Optional Request-URI for OPTIONS.")
+    parser.add_argument("--call-info-url", default=env_config.get('call_info_url', ''), 
+                       help="URL for Call-Info header (e.g., CCAI conversation URL)")
+    parser.add_argument("--srtp-encryption", default=env_config.get('srtp_encryption', DEFAULT_SRTP_ENCRYPTION), 
+                       choices=SRTP_ENCRYPTION_CHOICES,
                         help="SRTP encryption profile to offer, or 'NONE' for plain RTP.")
-    parser.add_argument("--audio-file", help="Path to 2-channel audio file (e.g., WAV) for streaming.")
-    parser.add_argument("--packet-time", type=int, default=DEFAULT_PACKET_TIME_MS, help="RTP packet duration (ms)")
-    parser.add_argument("--stream-duration", type=float, default=0, help="Max stream duration (sec, 0=until file end/Ctrl+C)")
+    parser.add_argument("--audio-file", default=env_config.get('audio_file', ''), 
+                       help="Path to 2-channel audio file (e.g., WAV) for streaming.")
+    parser.add_argument("--packet-time", type=int, default=int(env_config.get('packet_time', str(DEFAULT_PACKET_TIME_MS))), 
+                       help="RTP packet duration (ms)")
+    parser.add_argument("--stream-duration", type=float, default=float(env_config.get('stream_duration', '0')), 
+                       help="Max stream duration (sec, 0=until file end/Ctrl+C)")
     # Output/Saving
-    parser.add_argument("--save-stream1-file", help=f"Save payload for label '{CLIENT_OFFERED_LABEL_1}' to this WAV file (PCMA/PCMU only).")
-    parser.add_argument("--save-stream2-file", help=f"Save payload for label '{CLIENT_OFFERED_LABEL_2}' to this WAV file (PCMA/PCMU only).")
+    parser.add_argument("--save-stream1-file", default=env_config.get('save_stream1_file', ''), 
+                       help=f"Save payload for label '{CLIENT_OFFERED_LABEL_1}' to this WAV file (PCMA/PCMU only).")
+    parser.add_argument("--save-stream2-file", default=env_config.get('save_stream2_file', ''), 
+                       help=f"Save payload for label '{CLIENT_OFFERED_LABEL_2}' to this WAV file (PCMA/PCMU only).")
     # Tooling/Debug
-    parser.add_argument("-d", "--debug", action="store_true", help="Enable DEBUG level logging.")
+    parser.add_argument("-d", "--debug", action="store_true", default=env_config.get('debug', False), 
+                       help="Enable DEBUG level logging.")
     # Packet Capture
-    parser.add_argument("--pcap-file", help="Output file path for packet capture (requires tshark/editcap).")
-    parser.add_argument("--capture-interface", default="any", help="Network interface for tshark ('any' needs root/admin).")
-    parser.add_argument("--capture-sip-range", default=DEFAULT_CAPTURE_SIP_RANGE, help="IP/CIDR for SIP signaling capture.")
-    parser.add_argument("--capture-sip-port", type=int, default=DEFAULT_CAPTURE_SIP_PORT, help="TCP port for SIP signaling capture.")
-    parser.add_argument("--capture-media-range", default=DEFAULT_CAPTURE_MEDIA_RANGE, help="IP/CIDR for RTP/media capture (UDP).")
+    parser.add_argument("--pcap-file", default=env_config.get('pcap_file', ''), 
+                       help="Output file path for packet capture (requires tshark/editcap).")
+    parser.add_argument("--capture-interface", default=env_config.get('capture_interface', 'any'), 
+                       help="Network interface for tshark ('any' needs root/admin).")
+    parser.add_argument("--capture-sip-range", default=env_config.get('capture_sip_range', DEFAULT_CAPTURE_SIP_RANGE), 
+                       help="IP/CIDR for SIP signaling capture.")
+    parser.add_argument("--capture-sip-port", type=int, default=int(env_config.get('capture_sip_port', str(DEFAULT_CAPTURE_SIP_PORT))), 
+                       help="TCP port for SIP signaling capture.")
+    parser.add_argument("--capture-media-range", default=env_config.get('capture_media_range', DEFAULT_CAPTURE_MEDIA_RANGE), 
+                       help="IP/CIDR for RTP/media capture (UDP).")
 
     args = parser.parse_args()
 

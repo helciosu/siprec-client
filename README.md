@@ -12,6 +12,100 @@ It uses `pylibsrtp` for SRTP handling and `soundfile`+`numpy` for reliable G.711
 
 The client optionally integrates with `tshark` and `editcap` (from Wireshark) to capture network traffic and inject TLS keys for easier debugging in Wireshark, provided the `SSLKEYLOGFILE` environment variable is set.
 
+## Project Codemap
+
+### Architecture Overview
+The application follows a **modular functional architecture** with a central client class managing SIP communication and separate streaming functions for media handling.
+
+### Core Components
+
+#### 1. Configuration System
+**Priority Order**: CLI arguments → `.env` file → Default values
+- **`.env` Support**: Automatic loading from current working directory
+- **Environment Variables**: All parameters use `SIPREC_` prefix (e.g., `SIPREC_DEST_HOST`)
+- **Example File**: `.env.example` template provided with all options
+- **Backward Compatibility**: Existing CLI usage unchanged
+
+#### 2. Main Client Class: `SiprecTester`
+**Location**: Lines 832-1695  
+**Responsibilities**: SIP session management, TLS connection, dialog state
+
+**Key Methods**:
+- `__init__()`: Initialize configuration and state
+- `_create_ssl_context()`: Setup TLS with client certificates
+- `connect()`: Establish TLS connection to SRS
+- `send_options()`: Optional OPTIONS ping testing
+- `send_invite()`: Send SIPREC INVITE with SDP/metadata
+- `send_ack()`: Acknowledge successful INVITE
+- `send_bye()`: Terminate SIP dialog
+- `close()`: Graceful connection cleanup
+
+#### 3. SIP Protocol Functions
+
+**SDP Handling**:
+- `create_sdp_offer()`: Generate SDP with media streams and crypto attributes
+- `parse_sdp_answer()`: Extract media info from server response
+
+**SIP Message Processing**:
+- `parse_sip_response()`: Parse SIP responses into components
+- `create_siprec_metadata()`: Generate SIPREC XML metadata
+
+#### 4. Media Streaming System
+
+**Audio Encoding**:
+- `encode_audio_segment()`: G.711 (PCMA/PCMU) encoding using `soundfile`
+- Codec support: PCMA, PCMU, G722, G729
+
+**Streaming Function**:
+- `stream_channel()`: Multi-threaded RTP/SRTP streaming per channel
+- Features: 
+  - Real-time packetization (20ms default)
+  - SRTP encryption via `pylibsrtp`
+  - WAV file saving for unencoded payloads
+  - Graceful shutdown via threading events
+
+#### 5. Data Structures
+```python
+SdpMediaInfo = namedtuple("SdpMediaInfo", [
+    "media_type", "port", "protocol", "fmt", "connection_ip",
+    "label", "crypto_suite", "crypto_key_material", "rtpmap"
+])
+```
+
+#### 6. Constants & Configuration
+- **SIP Protocol**: `SIP_VERSION`, `DEFAULT_SIPS_PORT`, `VIA_BRANCH_PREFIX`
+- **Media**: `DEFAULT_SDP_AUDIO_PORT_BASE`, `DEFAULT_PACKET_TIME_MS`
+- **Labels**: `CLIENT_OFFERED_LABEL_1` ("1"), `CLIENT_OFFERED_LABEL_2` ("2")
+- **SRTP**: `SUPPORTED_SRTP_CIPHERS_SDES`, `DEFAULT_SRTP_ENCRYPTION`
+
+#### 7. Network Capture Integration
+- `_setup_tshark()`: Packet capture initialization
+- `_run_editcap()`: TLS key injection for Wireshark decryption
+- Default filters for Google SIP SBC integration
+
+#### 8. Thread Architecture
+- **Main Thread**: SIP protocol handling
+- **Streaming Threads**: 2 separate threads for dual-channel audio
+- **Capture Thread**: Tshark process (background)
+
+### Dependencies
+
+#### Core Libraries:
+- `pylibsrtp`: SRTP encryption/decryption
+- `soundfile`: Audio encoding/decoding
+- `numpy`: Audio data processing
+- `python-dotenv`: Environment file loading
+
+#### System Tools (Optional):
+- `tshark`: Packet capture
+- `editcap`: TLS key injection
+
+### Key Design Patterns
+- **State Machine**: SIP dialog management
+- **Producer-Consumer**: Audio streaming pipeline
+- **Strategy Pattern**: SRTP vs RTP selection
+- **Observer Pattern**: Logging and monitoring
+
 ## Features
 
 *   Connects to SIPREC SRS using **TLS v1.2+** with client certificate authentication.
@@ -31,12 +125,59 @@ The client optionally integrates with `tshark` and `editcap` (from Wireshark) to
 *   Optional **Packet Capture** using `tshark` and **TLS Decryption** using `editcap` (requires `SSLKEYLOGFILE`).
 *   Detailed debug logging (`--debug`).
 
+## Configuration
+
+The application supports flexible configuration with the following priority order:
+
+1. **Command-line arguments** (highest priority)
+2. **`.env` file** (medium priority)  
+3. **Default values** (lowest priority)
+
+### Environment File Configuration
+
+Create a `.env` file in the same directory as the script:
+
+```bash
+# Copy the example template
+cp .env.example .env
+
+# Edit with your configuration
+# All parameters use SIPREC_ prefix
+```
+
+**Key Environment Variables**:
+- `SIPREC_DEST_NUMBER`: Destination user/number (e.g., `rec-target@srs.example.com`)
+- `SIPREC_DEST_HOST`: SIP server hostname
+- `SIPREC_SRC_NUMBER`: Source AOR (e.g., `client@example.com`)
+- `SIPREC_SRC_HOST`: Source host IP/FQDN
+- `SIPREC_CERT_FILE`: Path to client certificate
+- `SIPREC_KEY_FILE`: Path to client private key
+- `SIPREC_CA_FILE`: Path to CA certificate (optional)
+- `SIPREC_AUDIO_FILE`: Path to audio file for streaming
+- `SIPREC_SRTP_ENCRYPTION`: SRTP profile (`AES_CM_128_HMAC_SHA1_80`, `AES_CM_128_HMAC_SHA1_32`, `NONE`)
+- `SIPREC_DEBUG`: Enable debug logging (`true`/`false`)
+
+**Example Usage**:
+```bash
+# Use .env configuration (no arguments needed if fully configured)
+python siprec.py
+
+# Override specific .env values with CLI arguments
+python siprec.py --debug --srtp-encryption NONE
+
+# Traditional CLI usage (no .env file or ignore it)
+python siprec.py rec-target@srs.example.com srs.example.com --src-number client@example.com --src-host 1.2.3.4 --cert-file client.crt --key-file client.key
+
 ## Prerequisites
 
 *   **Python 3.8 or higher.**
 *   **Python Packages:** Install using pip:
     ```bash
-    pip install pylibsrtp soundfile numpy
+    pip install pylibsrtp soundfile numpy python-dotenv
+    ```
+    *Or use requirements.txt:*
+    ```bash
+    pip install -r requirements.txt
     ```
 *   **Client TLS Certificate:** PEM-formatted certificate with Client Authentication EKU.
 *   **Client Private Key:** Corresponding PEM-formatted *unencrypted* private key.
